@@ -1,4 +1,3 @@
-
 open Ll
 open X86
 open Cunit
@@ -171,11 +170,9 @@ let compile_op globals stack : Ll.operand -> X86.insn = function
   | (_, Id id)    -> Mov(eax, compile_id globals stack id)
 
 
-
-
 (* Puts the address computed by a gep computation into eax.  On 32-bit
    x86, the getelementptr instruction supports only i32
-   indices. Moreover, the first index must be excactly 0l.  Subsequent
+   indices. Moreover, the first index must be exactly 0l.  Subsequent
    indices are interpreted as offsets whose size is determined by the
    type of the op pointer. val_op compiles an operand into the eax
    register.
@@ -203,14 +200,19 @@ let compile_gep_path val_op op (path: (ty*opn) list) : insn list =
 	       Imul(Eax, x86_imm_of_int (byte_size_of_ty u));]
 	     @ (val_op offset_op) :: (Mov(ecx, eax)) :: code)
 
-    | _ -> failwith "compile_gep_path encountered unsupported getelementptr data" in
+    | _ -> failwith ("compile_gep_path encountered unsupported getelementptr data"^ (Lllib.string_of_ty ty)) in
   match (op, path) with
   | ((Ptr t, _),  (I32, Const 0l)::rest) -> 
      loop t rest [val_op op]
-  | ((ty,_),_) -> failwith ("compile_gep_path got incorrect parameters-the failing type was "^(Lllib.string_of_ty ty))
+  | ((x, _), (t, y)::rest )-> failwith "compile_gep_path got incorrect parameters"
 
 
-
+let rec compile_push_args globals stack (args: operand list ):X86.insn list =
+  let val_op = compile_op globals stack in
+	begin match args with
+	 | h::t ->  (compile_push_args globals stack t)@([Push(eax); val_op h])
+	 | [] -> []
+	end
 (* LL local ids map to stack slots, so accessing a value means moving
    it from the stack slot into a register for processing. The strategy
    for compiling instructions is to use eax as the primary register for
@@ -269,11 +271,23 @@ let compile_insn globals stack (i : Ll.insn) : X86.insn list =
       (* Push the arguments, call the function, move the result (if
 	 any) to the destination, and then clean up the stack. *)
       | Ll.Call(iopt,{name=fid;_},args) ->
-failwith "unimplemented"
+	let fn_lbl = mk_lbl_hint fid in
+	(* let fn_lbl = lbl_of_global globals fid in *)
+	let push_callee_save = [Push(eax);Push(ecx);Push(edx)] in
+	let pop_callee_save = [Pop(edx);Pop(ecx);Pop(eax)] in
+	let push_args = compile_push_args globals stack (List.rev args) in
+	let argsize = Int32.mul 4l (Int32.of_int (List.length args)) in
+	let ret_insns = begin match iopt with
+	  | None -> []
+	  | Some i -> [Mov((dst_op i), eax)]
+	end in
+	let clean_up =  [(* Pop(ebp); *)Add(esp,Imm (argsize))] in
+      List.rev(pop_callee_save@clean_up@ret_insns@[Call(Lbl ("_"^fid))]
+	       @push_args@push_callee_save)
 
       (* Bitcast is effectively just a Mov at the assembly level *)
-      | Bitcast (i, op, _) -> 
-failwith "unimplemented"
+      | Bitcast (i, op, _) ->[val_op(op);Mov(dst_op(i),eax)]
+	  
 
       (* Defer to the helper function to compute the pointer value *)
       | Gep (i, op, path) -> 
@@ -373,7 +387,10 @@ let compile_global (g : Ll.global) =
 (* Compile a top-level program by creating the globals map and then
 compiling the functions in that global context. *)
 let compile_prog (p:Ll.prog) : Cunit.cunit =
-  Lllib.write_prog_to_file "ll_code2" p;
+  (* print_endline("program: \n"^Lllib.string_of_prog p); *)
+Lllib.write_prog_to_file "run3-ll" p;
   let (globals_cu, globals) = List.split (List.map compile_global p.globals) in
   let functions_cu = List.map (compile_fdecl globals) p.functions in
-    (List.concat globals_cu) @ (List.concat functions_cu)
+  let c_u = (List.concat globals_cu) @ (List.concat functions_cu) in
+  dump_to_file c_u "assembly_code";
+  c_u

@@ -25,6 +25,7 @@ int* oat_alloc_array (int size) {
 }	
 
 void oat_array_bounds_check(int bound, int index) {
+  //printf("The bound is: %d and the index is : %d.\n",bound,index);
   if ((0 <= index) && (index < bound)) return;
   fprintf(stderr, "Array bounds violation: bound = %d index = %d.\n", bound, index);
   exit(-1);

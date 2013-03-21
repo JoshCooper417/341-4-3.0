@@ -282,8 +282,43 @@ let rec cmp_exp (c:ctxt) (exp:Range.t Ast.exp) : (operand * stream) =
 	      | None -> assert false (* true *)
 	end
 
-  | Ast.New(elem_ty,e1,id,e2) -> 
-failwith "unimplemented"
+  | Ast.New(elem_ty,e1,id,e2) ->
+    let(size_op,size_code) = cmp_exp c e1 in
+    let (input_id,input_op) = gen_local_op (I32) (snd id) in
+    let c2 = add_local c (snd id) input_op in
+    let (fun_op,fun_code) = cmp_exp c2 e2 in
+    let (array_op,array_code) = oat_alloc_array_dynamic elem_ty size_op in
+    let lend = mk_lbl_hint "end" in
+    let lcheck = mk_lbl_hint "check" in
+    let lbody = mk_lbl_hint "body" in
+    (* let (index_id,index_op) = gen_local_op (I32) "index" in *)
+    let (elem_ptr_id,elem_ptr_op) = gen_local_op (Ptr(cmp_ty elem_ty)) "elem_ptr" in
+    let (cmp_id,cmp_op) = gen_local_op I32 "cmp_op" in
+    let (index_id,index_op) = gen_local_op (I32) "index_op" in
+    let (const_one_id,const_one_op) = gen_local_op (Ptr I32) (snd id) in
+    let (check_id, check_op) =  gen_local_op I32 "incr_op" in
+
+    let insns =
+      size_code>@
+      array_code>@
+      [I(Alloca(const_one_id,I32))]>@
+      [I(Store((i32_op_of_int 1),const_one_op))]>@
+     	[I(Load(input_id,const_one_op))]>@
+	 [T(Br(lcheck))]>@
+      [L(lcheck)] >@
+ [T(Br(lend))  ]>@
+       [I(Icmp(cmp_id, Slt, input_op, size_op))]  >@
+      	[T(Cbr(cmp_op, lbody, lend))]  >@
+     	[L(lbody) ] >@
+      	fun_code >@
+      	[I(Gep(elem_ptr_id, array_op,gep_array_index(input_op)))] >@
+     	[I(Store(fun_op,elem_ptr_op))]>@
+      	[I(Binop(index_id, Add, input_op, (i32_op_of_int 1)))] >@
+        [T(Br(lcheck))  ]>@
+     [ L(lend)] in
+      
+(array_op, insns)
+(* failwith "unimplemented" *)
 
 
 (* Because length_of_array is polymorphic, we'd have to use bitcast to
@@ -309,9 +344,8 @@ and cmp_length_of_array (c:ctxt) (es:Range.t Ast.exp list) : operand * stream =
  * left-hand-side computes an address in memory to which a value can be
  * stored.  We therefore do not dereference the pointer here.  *)
 and cmp_lhs (c:ctxt) (l:Range.t Ast.lhs) : operand * stream =
-  print_string("\n Entering cmp_lhs");
   match l with
-    | Ast.Var(_, id) -> print_string("\nWe are now matching a var");
+    | Ast.Var(_, id) ->
 	begin match (lookup_local id c) with
 	  | None -> 
 	      begin match (lookup_global_val id c) with
@@ -321,22 +355,8 @@ and cmp_lhs (c:ctxt) (l:Range.t Ast.lhs) : operand * stream =
 	  | Some op -> (op, [])
 	end
     | Ast.Index(lhs,exp) ->
-      (* print_string("\nIndex matching; the expression is: " ^  (Astlib.string_of_exp exp)); *)
-      (* begin match lhs with *)
-      (* 	| Ast.Var(_, id) -> print_string("\nWe have a var"); *)
-      (* 	|_->() *)
-      (* end; *)
       let(index_op,index_code) = cmp_exp c exp in
-      let (array_op, array_code) = cmp_lhs c lhs in
-      (*array_size is an I32*)
-      let (array_size,array_size_code) = 	
-	let (len_id, len_op) = gen_local_op (Ptr I32) "len_ptr" in 
-	let (ans_id, ans_op) = gen_local_op I32 "len" in 
-	  (ans_op,
-           array_code >:: 
-	     I (Gep(len_id, array_op, gep_array_len)) >:: 
-	     I (Load(ans_id, len_op))) in
-      
+      let (array_op, array_code) = cmp_lhs c lhs in    
       let arr_ty =
       	begin match (fst array_op) with
       	|Ptr p -> p
@@ -358,18 +378,24 @@ and cmp_lhs (c:ctxt) (l:Range.t Ast.lhs) : operand * stream =
       in
 
       let (array_deref_id,array_deref_op) = gen_local_op arr_ty "array_dereferenced" in
-      let load_into_deref = [I(Load(array_deref_id,array_op))] in  
 
+       let load_into_deref = [I(Load(array_deref_id,array_op))] in
+      (*array_size is an I32*)
+      let (array_size,array_size_code) = 	
+	let (len_id, len_op) = gen_local_op (Ptr I32) "len_ptr" in 
+	let (ans_id, ans_op) = gen_local_op I32 "len" in 
+	  (ans_op,[ I (Load(ans_id, len_op));I (Gep(len_id, array_deref_op, gep_array_len))]) in
       let ptr_to_array_type = (Ptr array_type) in
       let (elt_id, elt_op) = gen_local_op ptr_to_array_type "elt_ptr" in
       let size_check_code = [I(Call(None,oat_array_bounds_check_fn,[array_size;index_op]))] in
       let gep_insn = [I(Gep(elt_id, array_deref_op, gep_array_index(index_op)))] in
-      (elt_op, index_code >@
-      	      array_size_code >@
-      	      size_check_code >@
-      	      load_into_deref
-      	      >@
-      	      gep_insn)
+
+      (elt_op,  array_code>@
+       index_code >@
+	 load_into_deref>@
+	 array_size_code >@
+      	 size_check_code >@
+      	gep_insn)
 
 (* When we treat a left-hand-side as an expression yielding a value,
    we actually load from the resulting pointer. *)
@@ -379,7 +405,7 @@ and cmp_lhs_exp c (l:Range.t Ast.lhs) : operand * stream =
       | (Ptr t, _) ->
 	  let (ans_id, ans_op) = gen_local_op t "_lhs" in
 	    (ans_op, lhs_code >:: I (Load(ans_id, lhs_op)))
-      | (t, _) -> failwith (Printf.sprintf "Compiler invariant failed: cmp_lhs_exp %s had non-pointer type" (string_of_operand lhs_op))
+      | (t, _) ->failwith (Printf.sprintf "Compiler invariant failed: cmp_lhs_exp %s had non-pointer type" (string_of_operand lhs_op))
     end
 
 
